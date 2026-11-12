@@ -8,6 +8,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"maunium.net/go/mautrix/bridgev2"
@@ -295,7 +296,43 @@ func emojiToReaction(emoji string) string {
 		return emoji[1 : len(emoji)-1]
 	}
 
+	// Any other Unicode emoji: look it up in Mattermost's own system emoji
+	// table (the same one the server validates reaction names against).
+	if name, ok := unicodeToMattermostEmojiName(emoji); ok {
+		return name
+	}
+
 	return emoji
+}
+
+// unicodeToMattermostEmojiName returns the Mattermost system emoji name for a
+// Unicode emoji. Matrix clients usually append the variation selector U+FE0F
+// to emoji presentation sequences while Mattermost's table sometimes stores the
+// bare code point (and vice versa), so both spellings are tried.
+func unicodeToMattermostEmojiName(emoji string) (string, bool) {
+	if emoji == "" {
+		return "", false
+	}
+	for _, candidate := range []string{emoji, strings.ReplaceAll(emoji, "\ufe0f", ""), emoji + "\ufe0f"} {
+		if candidate == "" {
+			continue
+		}
+		if name, count := model.GetEmojiNameFromUnicode(unicodeToEmojiID(candidate)); count > 0 {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// unicodeToEmojiID renders a Unicode string the way Mattermost's table keys
+// it: lowercase hex code points joined by "-" (e.g. "2764-fe0f").
+func unicodeToEmojiID(s string) string {
+	parts := make([]string, 0, len(s))
+	for _, r := range s {
+		// Mattermost zero-pads to at least 4 digits ("00a9-fe0f").
+		parts = append(parts, fmt.Sprintf("%04x", r))
+	}
+	return strings.Join(parts, "-")
 }
 
 // resolveThreadRoot returns the post ID to use as RootId when replying to

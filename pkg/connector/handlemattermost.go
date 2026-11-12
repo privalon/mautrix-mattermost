@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -580,5 +581,29 @@ func reactionToEmoji(name string) string {
 	if emoji, ok := emojiMap[name]; ok {
 		return emoji
 	}
+	// Any other Mattermost system emoji: build the Unicode string from the
+	// server's own table. Custom (server-specific) emoji are not in it and stay
+	// as :name: text.
+	if emoji, ok := mattermostEmojiNameToUnicode(name); ok {
+		return emoji
+	}
 	return fmt.Sprintf(":%s:", name)
+}
+
+// mattermostEmojiNameToUnicode converts a Mattermost system emoji name to its
+// Unicode string ("2764-fe0f" -> U+2764 U+FE0F).
+func mattermostEmojiNameToUnicode(name string) (string, bool) {
+	id, ok := model.GetSystemEmojiId(name)
+	if !ok || id == "" {
+		return "", false
+	}
+	var b strings.Builder
+	for _, part := range strings.Split(id, "-") {
+		cp, err := strconv.ParseInt(part, 16, 32)
+		if err != nil || cp <= 0 {
+			return "", false
+		}
+		b.WriteRune(rune(cp))
+	}
+	return b.String(), true
 }

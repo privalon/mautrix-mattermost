@@ -8,6 +8,7 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -2290,5 +2291,82 @@ func TestHandlePostDeleted_SenderLoginSet(t *testing.T) {
 	}
 	if string(events[0].GetSender().SenderLogin) != "dp-deleter" {
 		t.Errorf("SenderLogin: got %q, want %q", events[0].GetSender().SenderLogin, "dp-deleter")
+	}
+}
+
+// Emoji outside the small built-in map are resolved through Mattermost's own
+// system emoji table, in both directions.
+func TestEmojiMapping_UsesMattermostSystemTable(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ unicode, name string }{
+		{"\U0001f610", "neutral_face"},      // the reaction that was lost live
+		{"\U0001f602", "joy"},               // 😂
+		{"❤️", "heart"},                     // built-in map wins, keeps its name
+		{"❤", "heart"},                      // bare form of a variation-selector emoji
+		{"\U0001f1fa\U0001f1e6", "flag-ua"}, // multi-codepoint flag
+		{"\U0001f468‍\U0001f469‍\U0001f466", "family_man_woman_boy"}, // ZWJ sequence (alias of man-woman-boy)
+	} {
+		if got := emojiToReaction(tc.unicode); got != tc.name {
+			t.Errorf("emojiToReaction(%q) = %q, want %q", tc.unicode, got, tc.name)
+		}
+		if !model.IsSystemEmojiName(tc.name) {
+			t.Errorf("%q must be a name Mattermost accepts", tc.name)
+		}
+	}
+
+	for _, tc := range []struct{ name, unicode string }{
+		{"neutral_face", "\U0001f610"},
+		{"joy", "\U0001f602"},
+		{"flag-ua", "\U0001f1fa\U0001f1e6"},
+		{"man-woman-boy", "\U0001f468‍\U0001f469‍\U0001f466"},
+	} {
+		if got := reactionToEmoji(tc.name); got != tc.unicode {
+			t.Errorf("reactionToEmoji(%q) = %q, want %q", tc.name, got, tc.unicode)
+		}
+	}
+}
+
+// Anything that is neither in the table nor a :custom: name keeps the old
+// behaviour (passed through / rendered as :name: text).
+func TestEmojiMapping_UnknownStaysUnchanged(t *testing.T) {
+	t.Parallel()
+	if got := emojiToReaction("not-an-emoji"); got != "not-an-emoji" {
+		t.Errorf("unknown text must pass through, got %q", got)
+	}
+	if got := reactionToEmoji("my_server_custom_emoji"); got != ":my_server_custom_emoji:" {
+		t.Errorf("custom emoji must stay :name:, got %q", got)
+	}
+}
+
+// Every system emoji must survive Mattermost name -> Unicode -> Mattermost
+// name, i.e. a reaction mirrored to Matrix and back keeps meaning the same
+// emoji (the name may be an alias of the same code, so compare the codes).
+func TestEmojiMapping_SystemTableRoundTrips(t *testing.T) {
+	t.Parallel()
+	bad := 0
+	for name, id := range model.SystemEmojis {
+		if !strings.ContainsAny(id[:1], "0123456789abcdef") || strings.Contains(id, "_") {
+			continue // pseudo entries such as "mattermost": no Unicode form
+		}
+		uni, ok := mattermostEmojiNameToUnicode(name)
+		if !ok || uni == "" {
+			bad++
+			t.Errorf("no Unicode for system emoji %q (%s)", name, id)
+			continue
+		}
+		back := emojiToReaction(uni)
+		backID, ok := model.GetSystemEmojiId(back)
+		if !ok {
+			bad++
+			t.Errorf("%q -> %q -> %q is not a Mattermost emoji", name, uni, back)
+			continue
+		}
+		if backID != id && unicodeToEmojiID(uni) != backID {
+			bad++
+			t.Errorf("%q (%s) round-trips to %q (%s)", name, id, back, backID)
+		}
+		if bad > 20 {
+			t.Fatal("too many failures")
+		}
 	}
 }
