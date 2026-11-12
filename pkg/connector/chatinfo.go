@@ -72,6 +72,11 @@ func (m *MattermostClient) channelMembersToChatMembers(members model.ChannelMemb
 		chatMember := bridgev2.ChatMember{
 			EventSender: bridgev2.EventSender{
 				Sender: MakeUserID(member.UserId),
+				// bridgev2 invites the logged-in Matrix user to a new portal
+				// room only for a member marked IsFromMe (or carrying a
+				// SenderLogin); without it only the ghosts are invited and
+				// the user never sees the room.
+				IsFromMe: member.UserId == m.userID,
 			},
 			Membership: event.MembershipJoin,
 		}

@@ -445,3 +445,22 @@ func TestChannelToChatInfo_CanBackfillFollowsConfig(t *testing.T) {
 		}
 	}
 }
+
+// TestChannelMembersToChatMembers_MarksLoggedInUserAsFromMe verifies that the
+// bridge's own Mattermost user is flagged IsFromMe, which is what makes
+// bridgev2 invite the Matrix user to the created room.
+func TestChannelMembersToChatMembers_MarksLoggedInUserAsFromMe(t *testing.T) {
+	t.Parallel()
+	client := newTestClient() // userID: "myuserid"
+	result := client.channelMembersToChatMembers(model.ChannelMembers{
+		{UserId: "myuserid", ChannelId: "ch1"},
+		{UserId: "other", ChannelId: "ch1"},
+	})
+
+	if !result.MemberMap[MakeUserID("myuserid")].IsFromMe {
+		t.Error("the logged-in user's member entry must have IsFromMe set")
+	}
+	if result.MemberMap[MakeUserID("other")].IsFromMe {
+		t.Error("other members must not have IsFromMe set")
+	}
+}
