@@ -23,6 +23,14 @@ var _ bridgev2.BackfillingNetworkAPI = (*MattermostClient)(nil)
 func (m *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.FetchMessagesParams) (*bridgev2.FetchMessagesResponse, error) {
 	channelID := ParsePortalID(params.Portal.ID)
 
+	// Replies are part of the channel's own post list (each carries ReplyTo),
+	// so there is nothing separate to fetch for a thread. bridgev2 only asks
+	// for one when a backfilled message sets ShouldBackfillThread; answering
+	// such a request with the channel's posts again would re-send them.
+	if params.ThreadRoot != "" {
+		return &bridgev2.FetchMessagesResponse{Forward: params.Forward}, nil
+	}
+
 	maxCount := m.connector.Config.BackfillMaxCount
 	if maxCount <= 0 {
 		maxCount = 100
@@ -80,9 +88,11 @@ func (m *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 			Timestamp: time.UnixMilli(post.CreateAt),
 		}
 
-		if post.RootId != "" {
-			msg.ShouldBackfillThread = true
-		}
+		// ShouldBackfillThread is deliberately never set: replies already
+		// arrive in this same list (with ReplyTo), and on a homeserver
+		// without batch send bridgev2 would run a thread backfill per reply
+		// that replays the channel, duplicating up to a page of messages
+		// per reply in Matrix.
 
 		messages = append(messages, msg)
 	}

@@ -424,8 +424,9 @@ func TestFetchMessages_MessageContent(t *testing.T) {
 	}
 }
 
-// TestFetchMessages_ThreadPost verifies that reply posts have ShouldBackfillThread
-// set and include ReplyTo references.
+// TestFetchMessages_ThreadPost verifies that reply posts include ReplyTo
+// references and are NOT flagged for a separate thread backfill (which would
+// replay the whole channel once per reply).
 func TestFetchMessages_ThreadPost(t *testing.T) {
 	t.Parallel()
 	fake := newFakeMM()
@@ -457,9 +458,9 @@ func TestFetchMessages_ThreadPost(t *testing.T) {
 		t.Error("parent message should not have ShouldBackfillThread")
 	}
 
-	// Reply should have ShouldBackfillThread set.
-	if !resp.Messages[1].ShouldBackfillThread {
-		t.Error("reply message should have ShouldBackfillThread set")
+	// Reply must not trigger a thread backfill either.
+	if resp.Messages[1].ShouldBackfillThread {
+		t.Error("reply message must not have ShouldBackfillThread set")
 	}
 
 	// Reply should have ReplyTo set in the converted message.
@@ -538,5 +539,33 @@ func TestFetchMessages_LargeMaxCount(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("expected non-nil response for large max count")
+	}
+}
+
+// TestFetchMessages_ThreadRootRequestReturnsNothing verifies that a
+// thread-backfill request (ThreadRoot set) is not answered with the channel's
+// posts, which bridgev2 would send to Matrix a second time.
+func TestFetchMessages_ThreadRootRequestReturnsNothing(t *testing.T) {
+	t.Parallel()
+	fake := newFakeMM()
+	t.Cleanup(fake.Close)
+
+	now := time.Now().UnixMilli()
+	fake.Posts["ch1"] = makePostList([]*model.Post{
+		{Id: "parent", ChannelId: "ch1", UserId: "user1", Message: "parent", CreateAt: now - 2000},
+		{Id: "reply", ChannelId: "ch1", UserId: "user2", Message: "reply", CreateAt: now - 1000, RootId: "parent"},
+	})
+
+	mc := newFullTestClient(fake.Server.URL)
+	resp, err := mc.FetchMessages(context.Background(), bridgev2.FetchMessagesParams{
+		Portal:     makeTestPortal("ch1"),
+		ThreadRoot: MakeMessageID("parent"),
+		Forward:    true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Messages) != 0 {
+		t.Fatalf("thread request must return no messages, got %d", len(resp.Messages))
 	}
 }
