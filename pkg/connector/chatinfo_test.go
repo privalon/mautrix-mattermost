@@ -431,3 +431,17 @@ func TestChannelToChatInfo_PrivateChannel(t *testing.T) {
 		t.Errorf("Topic: got %v, want %q", info.Topic, "Private matters")
 	}
 }
+
+func TestChannelToChatInfo_CanBackfillFollowsConfig(t *testing.T) {
+	t.Parallel()
+	channel := &model.Channel{Id: "ch123", Type: model.ChannelTypeOpen, DisplayName: "General", Name: "general"}
+	members := model.ChannelMembers{{UserId: "user1", ChannelId: "ch123"}}
+
+	for _, enabled := range []bool{true, false} {
+		client := newTestClient()
+		client.connector.Config.BackfillEnabled = enabled
+		if got := client.channelToChatInfo(channel, members).CanBackfill; got != enabled {
+			t.Errorf("backfill_enabled=%v: CanBackfill=%v", enabled, got)
+		}
+	}
+}

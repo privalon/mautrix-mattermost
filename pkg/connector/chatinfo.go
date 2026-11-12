@@ -23,6 +23,11 @@ func (m *MattermostClient) channelToChatInfo(channel *model.Channel, members mod
 
 	chatInfo := &bridgev2.ChatInfo{
 		Members: memberList,
+		// mautrix-go >= 0.26 only backfills history when a portal is created
+		// if the network connector sets CanBackfill (older versions did it
+		// unconditionally). FetchMessages is implemented, so follow the
+		// connector's own backfill_enabled switch.
+		CanBackfill: m.connector != nil && m.connector.Config.BackfillEnabled,
 	}
 
 	switch channel.Type {
