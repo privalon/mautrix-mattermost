@@ -77,7 +77,7 @@ func (t *TokenLoginProcess) Start(_ context.Context) (*bridgev2.LoginStep, error
 
 func (t *TokenLoginProcess) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
 	if serverURL, ok := input["server_url"]; ok && t.serverURL == "" {
-		t.serverURL = serverURL
+		t.serverURL = normalizeServerURL(serverURL)
 		return &bridgev2.LoginStep{
 			Type:         bridgev2.LoginStepTypeUserInput,
 			StepID:       "fi.mau.mattermost.login.token",
@@ -174,7 +174,7 @@ func (p *PasswordLoginProcess) Start(_ context.Context) (*bridgev2.LoginStep, er
 
 func (p *PasswordLoginProcess) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
 	if serverURL, ok := input["server_url"]; ok && p.serverURL == "" {
-		p.serverURL = serverURL
+		p.serverURL = normalizeServerURL(serverURL)
 		return &bridgev2.LoginStep{
 			Type:         bridgev2.LoginStepTypeUserInput,
 			StepID:       "fi.mau.mattermost.login.credentials",

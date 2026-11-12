@@ -7,6 +7,7 @@ package connector
 
 import (
 	"strconv"
+	"strings"
 
 	"maunium.net/go/mautrix/bridgev2/networkid"
 )
@@ -64,4 +65,13 @@ func makePortalKey(channelID string) networkid.PortalKey {
 	return networkid.PortalKey{
 		ID: MakePortalID(channelID),
 	}
+}
+
+// normalizeServerURL trims whitespace and trailing slashes from a Mattermost
+// server URL. A trailing slash otherwise ends up as a double slash
+// (`wss://host//api/v4/websocket`) in the WebSocket URL, which reverse proxies
+// answer with a redirect instead of the upgrade, so the bridge never receives
+// a single message even though REST calls (which tolerate it) succeed.
+func normalizeServerURL(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }

@@ -934,3 +934,31 @@ func TestHandleMatrixMessage_EmptyBody(t *testing.T) {
 // Note: Testing HandleMatrixMessage with file uploads (MsgImage/MsgVideo/MsgAudio/MsgFile)
 // requires a full bridge setup for DownloadMedia, which is impractical in unit tests.
 // The media upload path is covered by integration tests or manual testing.
+
+// Posts created from Matrix carry a pending_post_id that is remembered, so
+// their WebSocket echo (and only theirs) can be skipped.
+func TestHandleMatrixMessage_TagsPostForEchoSuppression(t *testing.T) {
+	fm := newFakeMM()
+	defer fm.Close()
+	mc := newFullTestClient(fm.Server.URL)
+
+	msg := &bridgev2.MatrixMessage{
+		MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
+			Portal:  makeTestPortal("test-channel"),
+			Content: &event.MessageEventContent{MsgType: event.MsgText, Body: "Hello"},
+		},
+	}
+	if _, err := mc.HandleMatrixMessage(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	fm.mu.Lock()
+	sent := fm.LastCreatedPost
+	fm.mu.Unlock()
+	if sent == nil || sent.PendingPostId == "" {
+		t.Fatalf("created post must carry a pending_post_id, got %+v", sent)
+	}
+	if !mc.consumePendingEcho(sent.PendingPostId) {
+		t.Error("the pending_post_id sent to Mattermost must be remembered for echo suppression")
+	}
+}

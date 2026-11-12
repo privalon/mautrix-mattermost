@@ -7,9 +7,11 @@ package connector
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/rs/zerolog"
@@ -490,5 +492,88 @@ func TestDisconnect_ConcurrentSafe(t *testing.T) {
 		// expected: channel is closed
 	default:
 		t.Fatal("stopChan was not closed after concurrent Disconnect calls")
+	}
+}
+
+func TestNormalizeServerURL(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"https://mm.example.com":      "https://mm.example.com",
+		"https://mm.example.com/":     "https://mm.example.com",
+		" https://mm.example.com// ":  "https://mm.example.com",
+		"https://mm.example.com/sub/": "https://mm.example.com/sub",
+		"":                            "",
+	} {
+		if got := normalizeServerURL(in); got != want {
+			t.Errorf("normalizeServerURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// A trailing slash must not become a double slash in the WebSocket URL.
+	if got := httpToWS(normalizeServerURL("https://mm.example.com/")); got != "wss://mm.example.com" {
+		t.Errorf("httpToWS = %q", got)
+	}
+}
+
+func TestReconnectWebSocket_RetriesUntilItSucceeds(t *testing.T) {
+	t.Parallel()
+	mc := newFullTestClient("http://localhost")
+	attempts := 0
+	mc.wsBackoffBase = time.Millisecond
+	mc.wsConnect = func() error {
+		attempts++
+		if attempts < 3 {
+			return fmt.Errorf("handshake failed")
+		}
+		return nil
+	}
+
+	mc.reconnectWebSocket(false)
+
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts (2 failures then success), got %d", attempts)
+	}
+	if mc.wsReconnecting.Load() {
+		t.Error("reconnect guard must be released after success")
+	}
+}
+
+func TestReconnectWebSocket_StopsWhenClientStops(t *testing.T) {
+	t.Parallel()
+	mc := newFullTestClient("http://localhost")
+	mc.wsBackoffBase = time.Millisecond
+	mc.wsConnect = func() error { return fmt.Errorf("never works") }
+	close(mc.stopChan)
+
+	done := make(chan struct{})
+	go func() { mc.reconnectWebSocket(false); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconnect loop must exit once the client is stopped")
+	}
+}
+
+func TestReconnectWebSocket_OnlyOneLoopAtATime(t *testing.T) {
+	t.Parallel()
+	mc := newFullTestClient("http://localhost")
+	mc.wsReconnecting.Store(true)
+	called := false
+	mc.wsConnect = func() error { called = true; return nil }
+
+	mc.reconnectWebSocket(false)
+
+	if called {
+		t.Error("a second reconnect loop must not start while one is running")
+	}
+}
+
+func TestGetChatInfoAndUserInfo_NotLoggedIn(t *testing.T) {
+	t.Parallel()
+	mc := newNotLoggedInClient()
+	if _, err := mc.GetChatInfo(context.Background(), makeTestPortal("ch1")); err == nil {
+		t.Error("GetChatInfo without a client must return an error, not panic")
+	}
+	if _, err := mc.GetUserInfo(context.Background(), &bridgev2.Ghost{Ghost: &database.Ghost{ID: MakeUserID("u1")}}); err == nil {
+		t.Error("GetUserInfo without a client must return an error, not panic")
 	}
 }

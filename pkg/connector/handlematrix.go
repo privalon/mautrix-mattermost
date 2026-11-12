@@ -59,6 +59,14 @@ func (m *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		post.RootId = ParseMessageID(msg.ReplyTo.ID)
 	}
 
+	// Tag the post so its WebSocket echo is recognised and skipped, without
+	// also dropping the user's own posts from other Mattermost clients. Only
+	// needed (and only meaningful) when posting as the logged-in user.
+	if postClient == m.client {
+		post.PendingPostId = model.NewId()
+		m.rememberPendingPost(post.PendingPostId)
+	}
+
 	createdPost, _, err := postClient.CreatePost(ctx, post)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create post: %w", err)

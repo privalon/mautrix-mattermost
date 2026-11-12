@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-
+	"sync/atomic"
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -53,7 +53,32 @@ type MattermostClient struct {
 	stopOnce sync.Once
 	stopChan chan struct{}
 	log      zerolog.Logger
+
+	// sentPending holds the pending_post_id of posts this bridge created from
+	// Matrix, so the WebSocket echo of exactly those posts is skipped while the
+	// user's own posts from other Mattermost clients are still bridged.
+	sentPending sync.Map // pending post id (string) -> time.Time
+
+	// wsReconnecting guards against two reconnect loops running at once.
+	wsReconnecting atomic.Bool
+	// wsConnect and wsBackoffBase exist so tests can drive the reconnect loop.
+	wsConnect     func() error
+	wsBackoffBase time.Duration
 }
+
+const (
+	// memberPageSize is how many channel members are fetched per channel. A
+	// channel with at least this many members is treated as having a partial
+	// member list (see channelMembersToChatMembers).
+	memberPageSize = 200
+
+	// pendingEchoTTL is how long a Matrix-originated post is remembered for
+	// echo suppression.
+	pendingEchoTTL = 5 * time.Minute
+
+	wsBackoffBaseDefault = 5 * time.Second
+	wsBackoffMax         = 5 * time.Minute
+)
 
 var (
 	_ bridgev2.NetworkAPI                    = (*MattermostClient)(nil)
@@ -82,9 +107,9 @@ func NewMattermostClient(login *bridgev2.UserLogin, connector *MattermostConnect
 	// types, including lightweight double-puppet-only logins.
 	mc.userID = meta.UserID
 	mc.teamID = meta.TeamID
-	mc.serverURL = meta.ServerURL
+	mc.serverURL = normalizeServerURL(meta.ServerURL)
 	if meta.Token != "" && !meta.DoublePuppetOnly {
-		mc.client = model.NewAPIv4Client(meta.ServerURL)
+		mc.client = model.NewAPIv4Client(mc.serverURL)
 		mc.client.SetToken(meta.Token)
 	}
 	return mc
@@ -155,6 +180,9 @@ func (m *MattermostClient) Connect(ctx context.Context) {
 			Error:      "mm-ws-failed",
 			Message:    "WebSocket connection failed",
 		})
+		// Keep trying instead of staying disconnected until the next restart;
+		// the channel sync runs as soon as a connection succeeds.
+		go m.reconnectWebSocket(true)
 		return
 	}
 
@@ -167,7 +195,10 @@ func (m *MattermostClient) Connect(ctx context.Context) {
 }
 
 func (m *MattermostClient) connectWebSocket() error {
-	wsURL := httpToWS(m.serverURL)
+	if m.wsConnect != nil {
+		return m.wsConnect()
+	}
+	wsURL := httpToWS(normalizeServerURL(m.serverURL))
 	var err error
 	m.wsClient, err = model.NewWebSocketClient4(wsURL, m.client.AuthToken)
 	if err != nil {
@@ -211,24 +242,66 @@ func (m *MattermostClient) listenWebSocket() {
 	}
 }
 
+// sendBridgeState reports a bridge state, tolerating a client without a user
+// login (unit tests, lightweight logins).
+func (m *MattermostClient) sendBridgeState(state status.BridgeState) {
+	if m.userLogin == nil || m.userLogin.BridgeState == nil {
+		return
+	}
+	m.userLogin.BridgeState.Send(state)
+}
+
 func (m *MattermostClient) handleWebSocketDisconnect() {
-	m.userLogin.BridgeState.Send(status.BridgeState{
+	m.sendBridgeState(status.BridgeState{
 		StateEvent: status.StateTransientDisconnect,
 		Error:      "mm-ws-disconnected",
 		Message:    "WebSocket disconnected, reconnecting",
 	})
+	// Posts made while disconnected are not replayed by the server, so resync
+	// the channels afterwards (backfill only fetches what is newer than the
+	// last bridged message).
+	m.reconnectWebSocket(true)
+}
 
-	if err := m.connectWebSocket(); err != nil {
-		m.log.Error().Err(err).Msg("Failed to reconnect WebSocket")
-		m.userLogin.BridgeState.Send(status.BridgeState{
-			StateEvent: status.StateUnknownError,
+// reconnectWebSocket keeps trying to re-establish the WebSocket with
+// exponential backoff until it succeeds or the client is stopped. A single
+// failed attempt used to leave the bridge permanently deaf.
+func (m *MattermostClient) reconnectWebSocket(resync bool) {
+	if !m.wsReconnecting.CompareAndSwap(false, true) {
+		return
+	}
+	defer m.wsReconnecting.Store(false)
+
+	base := m.wsBackoffBase
+	if base <= 0 {
+		base = wsBackoffBaseDefault
+	}
+	delay := base
+	for attempt := 1; ; attempt++ {
+		select {
+		case <-m.stopChan:
+			return
+		case <-time.After(delay):
+		}
+		err := m.connectWebSocket()
+		if err == nil {
+			m.log.Info().Int("attempt", attempt).Msg("WebSocket reconnected")
+			m.sendBridgeState(status.BridgeState{StateEvent: status.StateConnected})
+			if resync {
+				go m.syncChannels(context.Background())
+			}
+			return
+		}
+		m.log.Warn().Err(err).Int("attempt", attempt).Dur("retry_in", delay*2).Msg("Failed to reconnect WebSocket")
+		m.sendBridgeState(status.BridgeState{
+			StateEvent: status.StateTransientDisconnect,
 			Error:      "mm-ws-reconnect-failed",
-			Message:    "Failed to reconnect WebSocket",
+			Message:    "Failed to reconnect WebSocket, retrying",
 		})
-	} else {
-		m.userLogin.BridgeState.Send(status.BridgeState{
-			StateEvent: status.StateConnected,
-		})
+		delay *= 2
+		if delay > wsBackoffMax {
+			delay = wsBackoffMax
+		}
 	}
 }
 
@@ -272,7 +345,7 @@ func (m *MattermostClient) syncChannels(ctx context.Context) {
 			Str("channel_type", string(ch.Type)).
 			Msg("Syncing channel")
 
-		members, _, err := m.client.GetChannelMembers(ctx, ch.Id, 0, 200, "")
+		members, _, err := m.client.GetChannelMembers(ctx, ch.Id, 0, memberPageSize, "")
 		if err != nil {
 			m.log.Warn().Err(err).Str("channel_id", ch.Id).Msg("Failed to get channel members")
 			continue
@@ -340,13 +413,16 @@ func (m *MattermostClient) IsThisUser(_ context.Context, userID networkid.UserID
 }
 
 func (m *MattermostClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+	if m.client == nil {
+		return nil, bridgev2.ErrNotLoggedIn
+	}
 	channelID := ParsePortalID(portal.ID)
 	channel, _, err := m.client.GetChannel(ctx, channelID, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get channel info: %w", err)
 	}
 
-	members, _, err := m.client.GetChannelMembers(ctx, channelID, 0, 200, "")
+	members, _, err := m.client.GetChannelMembers(ctx, channelID, 0, memberPageSize, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get channel members: %w", err)
 	}
@@ -355,6 +431,9 @@ func (m *MattermostClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 }
 
 func (m *MattermostClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
+	if m.client == nil {
+		return nil, bridgev2.ErrNotLoggedIn
+	}
 	mmUserID := ParseUserID(ghost.ID)
 	user, _, err := m.client.GetUser(ctx, mmUserID, "")
 	if err != nil {
@@ -414,4 +493,35 @@ func (m *MattermostClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal
 		ReadReceipts:        true,
 		TypingNotifications: true,
 	}
+}
+
+// rememberPendingPost records the pending_post_id of a post this bridge is about
+// to create from Matrix. It must be called before the post is created: the
+// WebSocket echo can arrive before the REST call returns.
+func (m *MattermostClient) rememberPendingPost(pendingID string) {
+	if pendingID == "" {
+		return
+	}
+	now := time.Now()
+	m.sentPending.Range(func(k, v any) bool {
+		if t, ok := v.(time.Time); ok && now.Sub(t) > pendingEchoTTL {
+			m.sentPending.Delete(k)
+		}
+		return true
+	})
+	m.sentPending.Store(pendingID, now)
+}
+
+// consumePendingEcho reports whether pendingID belongs to a post created by this
+// bridge (and forgets it), i.e. whether the WebSocket event is our own echo.
+func (m *MattermostClient) consumePendingEcho(pendingID string) bool {
+	if pendingID == "" {
+		return false
+	}
+	v, ok := m.sentPending.LoadAndDelete(pendingID)
+	if !ok {
+		return false
+	}
+	t, _ := v.(time.Time)
+	return time.Since(t) <= pendingEchoTTL
 }

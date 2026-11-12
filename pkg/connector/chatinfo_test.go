@@ -6,6 +6,7 @@
 package connector
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -462,5 +463,25 @@ func TestChannelMembersToChatMembers_MarksLoggedInUserAsFromMe(t *testing.T) {
 	}
 	if result.MemberMap[MakeUserID("other")].IsFromMe {
 		t.Error("other members must not have IsFromMe set")
+	}
+}
+
+// A page of exactly memberPageSize members may be truncated; claiming it is
+// the full list would make bridgev2 remove every member that is not in it.
+func TestChannelMembersToChatMembers_TruncatedListIsNotFull(t *testing.T) {
+	t.Parallel()
+	client := newTestClient()
+
+	full := make(model.ChannelMembers, 0, memberPageSize)
+	for i := 0; i < memberPageSize-1; i++ {
+		full = append(full, model.ChannelMember{UserId: fmt.Sprintf("u%d", i), ChannelId: "ch1"})
+	}
+	if !client.channelMembersToChatMembers(full).IsFull {
+		t.Error("a list below the page size is complete and must be IsFull")
+	}
+
+	truncated := append(full, model.ChannelMember{UserId: "last", ChannelId: "ch1"})
+	if client.channelMembersToChatMembers(truncated).IsFull {
+		t.Error("a list at the page size may be truncated and must not be IsFull")
 	}
 }

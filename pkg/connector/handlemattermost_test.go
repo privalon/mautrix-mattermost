@@ -360,8 +360,10 @@ func TestHandleEvent_Dispatch(t *testing.T) {
 	mock := testMock(mc)
 
 	// Build events that should be echoed (own user) so they return early.
+	mc.rememberPendingPost("dispatch-pending")
 	postJSON, _ := json.Marshal(&model.Post{
 		Id: "p1", UserId: "my-user-id", ChannelId: "ch1", Message: "hello",
+		PendingPostId: "dispatch-pending",
 	})
 	reactionJSON, _ := json.Marshal(&model.Reaction{
 		UserId: "my-user-id", PostId: "p1", EmojiName: "+1",
@@ -400,12 +402,16 @@ func TestHandleEvent_Dispatch(t *testing.T) {
 // handlePosted echo prevention tests
 // ---------------------------------------------------------------------------
 
-func TestHandlePosted_EchoPrevention_OwnPost(t *testing.T) {
+// The echo of a post the bridge created from Matrix is recognised by its
+// pending_post_id and skipped.
+func TestHandlePosted_EchoPrevention_OwnBridgedPost(t *testing.T) {
 	t.Parallel()
 	mc := newFullTestClient("http://localhost")
 	mock := testMock(mc)
+	mc.rememberPendingPost("pending-from-matrix")
 	postJSON, _ := json.Marshal(&model.Post{
 		Id: "p1", UserId: "my-user-id", ChannelId: "ch1", Message: "hello",
+		PendingPostId: "pending-from-matrix",
 	})
 	evt := newWebSocketEvent(model.WebsocketEventPosted, "ch1", map[string]any{
 		"post":        string(postJSON),
@@ -415,7 +421,49 @@ func TestHandlePosted_EchoPrevention_OwnPost(t *testing.T) {
 	mc.handlePosted(evt)
 
 	if len(mock.Events()) != 0 {
-		t.Errorf("expected 0 events (own post filtered), got %d", len(mock.Events()))
+		t.Errorf("expected 0 events (own bridged post filtered), got %d", len(mock.Events()))
+	}
+	if mc.consumePendingEcho("pending-from-matrix") {
+		t.Error("pending id must be forgotten once its echo was consumed")
+	}
+}
+
+// The user's own post from another Mattermost client (no matching pending id)
+// is real new content and must reach Matrix, flagged as from the user.
+func TestHandlePosted_OwnPostFromOtherClientIsBridged(t *testing.T) {
+	t.Parallel()
+	mc := newFullTestClient("http://localhost")
+	mock := testMock(mc)
+	postJSON, _ := json.Marshal(&model.Post{
+		Id: "p1", UserId: "my-user-id", ChannelId: "ch1", Message: "from my phone",
+		PendingPostId: "some-other-clients-pending-id",
+	})
+	evt := newWebSocketEvent(model.WebsocketEventPosted, "ch1", map[string]any{
+		"post":        string(postJSON),
+		"sender_name": "@myuser",
+	})
+
+	mc.handlePosted(evt)
+
+	events := mock.Events()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event (own post from another client), got %d", len(events))
+	}
+	if !events[0].GetSender().IsFromMe {
+		t.Error("own post must be queued with Sender.IsFromMe set")
+	}
+}
+
+func TestPendingEcho_ExpiresAndIgnoresEmpty(t *testing.T) {
+	t.Parallel()
+	mc := newFullTestClient("http://localhost")
+	mc.rememberPendingPost("")
+	if mc.consumePendingEcho("") {
+		t.Error("empty pending id must never match")
+	}
+	mc.sentPending.Store("old", time.Now().Add(-2*pendingEchoTTL))
+	if mc.consumePendingEcho("old") {
+		t.Error("an expired pending id must not match")
 	}
 }
 

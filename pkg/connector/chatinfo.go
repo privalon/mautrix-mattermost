@@ -91,7 +91,10 @@ func (m *MattermostClient) channelMembersToChatMembers(members model.ChannelMemb
 	}
 
 	return &bridgev2.ChatMemberList{
-		IsFull:           true,
+		// A page of exactly memberPageSize members means the channel may have
+		// more: claiming the list is full would make bridgev2 remove everyone
+		// missing from it. Ghosts of the rest are joined when they speak.
+		IsFull:           len(members) < memberPageSize,
 		TotalMemberCount: len(members),
 		MemberMap:        memberMap,
 	}

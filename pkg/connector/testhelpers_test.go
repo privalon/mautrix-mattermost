@@ -61,6 +61,8 @@ type fakeMM struct {
 
 	mu    sync.Mutex
 	calls []endpointCall
+	// LastCreatedPost is the body of the most recent POST /api/v4/posts.
+	LastCreatedPost *model.Post
 
 	// Users maps user ID to model.User for GetUser/GetMe responses.
 	Users map[string]*model.User
@@ -221,6 +223,11 @@ func (f *fakeMM) handler(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && path == "/api/v4/posts":
 		var post model.Post
 		_ = json.Unmarshal(body, &post)
+		var recorded model.Post
+		_ = json.Unmarshal(body, &recorded)
+		f.mu.Lock()
+		f.LastCreatedPost = &recorded
+		f.mu.Unlock()
 		post.Id = "created-post-id"
 		_ = json.NewEncoder(w).Encode(&post)
 

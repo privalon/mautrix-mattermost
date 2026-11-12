@@ -82,7 +82,8 @@ func (m *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 		msg := &bridgev2.BackfillMessage{
 			ConvertedMessage: converted,
 			Sender: bridgev2.EventSender{
-				Sender: MakeUserID(post.UserId),
+				Sender:   MakeUserID(post.UserId),
+				IsFromMe: post.UserId == m.userID,
 			},
 			ID:        MakeMessageID(post.Id),
 			Timestamp: time.UnixMilli(post.CreateAt),

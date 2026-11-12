@@ -26,7 +26,8 @@ import (
 // bridgev2 framework uses that user's double puppet intent instead of a ghost.
 func (m *MattermostClient) senderFor(mmUserID string) bridgev2.EventSender {
 	sender := bridgev2.EventSender{
-		Sender: MakeUserID(mmUserID),
+		Sender:   MakeUserID(mmUserID),
+		IsFromMe: mmUserID == m.userID,
 	}
 	if loginID, ok := m.connector.DoublePuppetLoginID(mmUserID); ok {
 		sender.SenderLogin = loginID
@@ -70,8 +71,10 @@ func (m *MattermostClient) parsePostedEvent(evt *model.WebSocketEvent) (*model.P
 		return nil, fmt.Errorf("failed to unmarshal post: %w", err)
 	}
 
-	// Echo prevention: skip own posts.
-	if post.UserId == m.userID {
+	// Echo prevention: skip the echo of posts this bridge created from Matrix
+	// (matched by pending_post_id). The user's own posts made from other
+	// Mattermost clients are real new content and are bridged.
+	if post.UserId == m.userID && m.consumePendingEcho(post.PendingPostId) {
 		return nil, nil
 	}
 
