@@ -962,3 +962,39 @@ func TestHandleMatrixMessage_TagsPostForEchoSuppression(t *testing.T) {
 		t.Error("the pending_post_id sent to Mattermost must be remembered for echo suppression")
 	}
 }
+
+// Replying (from Matrix) to a post that is itself a thread reply must use the
+// thread's root as RootId; Mattermost rejects a reply post as root with
+// "Invalid RootId parameter" and the message was lost.
+func TestHandleMatrixMessage_ReplyToThreadReplyUsesThreadRoot(t *testing.T) {
+	fm := newFakeMM()
+	defer fm.Close()
+	fm.PostsByID = map[string]*model.Post{
+		"root":  {Id: "root", ChannelId: "test-channel", Message: "root"},
+		"reply": {Id: "reply", ChannelId: "test-channel", Message: "a reply", RootId: "root"},
+	}
+	mc := newFullTestClient(fm.Server.URL)
+
+	for _, tc := range []struct{ name, replyTo, wantRoot string }{
+		{"reply to a thread reply", "reply", "root"},
+		{"reply to a top-level post", "root", "root"},
+		{"reply to an unknown post passes through", "gone", "gone"},
+	} {
+		msg := &bridgev2.MatrixMessage{
+			MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
+				Portal:  makeTestPortal("test-channel"),
+				Content: &event.MessageEventContent{MsgType: event.MsgText, Body: "answer"},
+			},
+			ReplyTo: &database.Message{ID: MakeMessageID(tc.replyTo)},
+		}
+		if _, err := mc.HandleMatrixMessage(context.Background(), msg); err != nil {
+			t.Fatalf("%s: unexpected error: %v", tc.name, err)
+		}
+		fm.mu.Lock()
+		got := fm.LastCreatedPost.RootId
+		fm.mu.Unlock()
+		if got != tc.wantRoot {
+			t.Errorf("%s: RootId = %q, want %q", tc.name, got, tc.wantRoot)
+		}
+	}
+}

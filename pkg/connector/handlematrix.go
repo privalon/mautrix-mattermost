@@ -56,7 +56,7 @@ func (m *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 
 	// Handle replies.
 	if msg.ReplyTo != nil {
-		post.RootId = ParseMessageID(msg.ReplyTo.ID)
+		post.RootId = resolveThreadRoot(ctx, postClient, ParseMessageID(msg.ReplyTo.ID))
 	}
 
 	// Tag the post so its WebSocket echo is recognised and skipped, without
@@ -296,4 +296,21 @@ func emojiToReaction(emoji string) string {
 	}
 
 	return emoji
+}
+
+// resolveThreadRoot returns the post ID to use as RootId when replying to
+// targetID. Mattermost only accepts the first post of a thread as RootId:
+// replying to a post that is itself a reply is rejected with "Invalid RootId
+// parameter", so the target's own RootId has to be used in that case. If the
+// target cannot be fetched the ID is passed through unchanged and Mattermost's
+// own validation decides.
+func resolveThreadRoot(ctx context.Context, client *model.Client4, targetID string) string {
+	if client == nil || targetID == "" {
+		return targetID
+	}
+	target, _, err := client.GetPost(ctx, targetID, "")
+	if err != nil || target == nil || target.RootId == "" {
+		return targetID
+	}
+	return target.RootId
 }

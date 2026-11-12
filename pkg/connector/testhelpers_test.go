@@ -82,6 +82,8 @@ type fakeMM struct {
 	Files map[string]*model.FileInfo
 	// Posts maps channel ID to PostList for backfill endpoints.
 	Posts map[string]*model.PostList
+	// PostsByID serves GET /api/v4/posts/{id}.
+	PostsByID map[string]*model.Post
 	// FailEndpoints causes specific path prefixes to return 500.
 	FailEndpoints map[string]bool
 }
@@ -218,6 +220,18 @@ func (f *fakeMM) handler(w http.ResponseWriter, r *http.Request) {
 		}
 		// Return empty post list.
 		_ = json.NewEncoder(w).Encode(model.NewPostList())
+
+	// GET /api/v4/posts/{post_id}
+	case r.Method == "GET" && strings.HasPrefix(path, "/api/v4/posts/") && strings.Count(path, "/") == 4:
+		f.mu.Lock()
+		post := f.PostsByID[strings.TrimPrefix(path, "/api/v4/posts/")]
+		f.mu.Unlock()
+		if post == nil {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "not found"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(post)
 
 	// POST /api/v4/posts
 	case r.Method == "POST" && path == "/api/v4/posts":
