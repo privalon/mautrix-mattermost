@@ -8,6 +8,7 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -2075,6 +2076,80 @@ func TestConvertFileToMatrix_APIError(t *testing.T) {
 
 	if result != nil {
 		t.Errorf("expected nil result on API error, got %+v", result)
+	}
+}
+
+func TestConvertFileToMatrixMedia_UploadsContent(t *testing.T) {
+	t.Parallel()
+	fake := newFakeMM()
+	t.Cleanup(fake.Close)
+	fake.Files["f1"] = &model.FileInfo{Id: "f1", Name: "photo.jpg", MimeType: "image/jpeg", Size: 1}
+
+	mc := newFullTestClient(fake.Server.URL)
+	var gotData []byte
+	var gotName, gotMime string
+	up := func(_ context.Context, data []byte, name, mime string) (id.ContentURIString, *event.EncryptedFileInfo, error) {
+		gotData, gotName, gotMime = data, name, mime
+		return "mxc://example.com/abc", nil, nil
+	}
+	res := mc.convertFileToMatrixMedia(context.Background(), "f1", 1, up)
+	if res == nil {
+		t.Fatal("expected part")
+	}
+	if res.Content.URL != "mxc://example.com/abc" {
+		t.Errorf("URL: got %q", res.Content.URL)
+	}
+	if string(gotData) != "content-of-f1" || gotName != "photo.jpg" || gotMime != "image/jpeg" {
+		t.Errorf("upload args: %q %q %q", gotData, gotName, gotMime)
+	}
+	if res.Content.Info.Size != len("content-of-f1") {
+		t.Errorf("Size: got %d", res.Content.Info.Size)
+	}
+}
+
+func TestConvertFileToMatrixMedia_UploadFailureGivesNotice(t *testing.T) {
+	t.Parallel()
+	fake := newFakeMM()
+	t.Cleanup(fake.Close)
+	fake.Files["f1"] = &model.FileInfo{Id: "f1", Name: "photo.jpg", MimeType: "image/jpeg"}
+
+	mc := newFullTestClient(fake.Server.URL)
+	up := func(context.Context, []byte, string, string) (id.ContentURIString, *event.EncryptedFileInfo, error) {
+		return "", nil, errors.New("boom")
+	}
+	res := mc.convertFileToMatrixMedia(context.Background(), "f1", 1, up)
+	if res == nil || res.Content.MsgType != event.MsgNotice || res.Content.URL != "" {
+		t.Fatalf("expected notice part, got %+v", res)
+	}
+}
+
+func TestConvertFileToMatrixMedia_VoiceMessage(t *testing.T) {
+	t.Parallel()
+	fake := newFakeMM()
+	t.Cleanup(fake.Close)
+	fake.Files["v1"] = &model.FileInfo{Id: "v1", Name: "voice_message.m4a", MimeType: "audio/mp4"}
+	fake.Files["s1"] = &model.FileInfo{Id: "s1", Name: "song.mp3", MimeType: "audio/mpeg"}
+
+	mc := newFullTestClient(fake.Server.URL)
+	if r := mc.convertFileToMatrix("v1", 1); r.Content.MSC3245Voice == nil {
+		t.Error("voice message not flagged as voice")
+	}
+	if r := mc.convertFileToMatrix("s1", 1); r.Content.MSC3245Voice != nil {
+		t.Error("music file wrongly flagged as voice")
+	}
+}
+
+func TestFileNameWithExt(t *testing.T) {
+	t.Parallel()
+	c := &event.MessageEventContent{Info: &event.FileInfo{MimeType: "audio/ogg; codecs=opus"}}
+	if got := fileNameWithExt("Voice message", c); got != "Voice message.ogg" {
+		t.Errorf("got %q", got)
+	}
+	if got := fileNameWithExt("a.mp3", c); got != "a.mp3" {
+		t.Errorf("got %q", got)
+	}
+	if got := fileNameWithExt("", &event.MessageEventContent{}); got != "upload" {
+		t.Errorf("got %q", got)
 	}
 }
 

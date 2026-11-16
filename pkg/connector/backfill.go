@@ -77,7 +77,11 @@ func (m *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 			continue
 		}
 
-		converted := m.convertPostToMatrix(post)
+		var upload matrixMediaUploader
+		if params.Portal != nil && params.Portal.Bridge != nil && params.Portal.Bridge.Bot != nil && params.Portal.MXID != "" {
+			upload = matrixUploader(params.Portal.Bridge.Bot, params.Portal.MXID)
+		}
+		converted := m.convertPostToMatrixMedia(ctx, post, upload)
 
 		msg := &bridgev2.BackfillMessage{
 			ConvertedMessage: converted,

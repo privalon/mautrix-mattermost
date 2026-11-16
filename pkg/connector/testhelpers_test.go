@@ -327,6 +327,15 @@ func (f *fakeMM) handler(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusNotFound)
 
+	// GET /api/v4/files/{file_id} (download)
+	case r.Method == "GET" && strings.HasPrefix(path, "/api/v4/files/") && strings.Count(path, "/") == 4:
+		fileID := strings.TrimPrefix(path, "/api/v4/files/")
+		if _, ok := f.Files[fileID]; ok {
+			_, _ = w.Write([]byte("content-of-" + fileID))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+
 	// POST /api/v4/files (upload)
 	case r.Method == "POST" && path == "/api/v4/files":
 		_ = json.NewEncoder(w).Encode(&model.FileUploadResponse{

@@ -20,6 +20,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 )
 
 // senderFor builds an EventSender for the given Mattermost user ID. If the
@@ -282,7 +283,7 @@ func (m *MattermostClient) handlePosted(evt *model.WebSocketEvent) {
 		ID:   MakeMessageID(post.Id),
 		Data: post,
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data *model.Post) (*bridgev2.ConvertedMessage, error) {
-			return m.convertPostToMatrix(data), nil
+			return m.convertPostToMatrixMedia(ctx, data, matrixUploader(intent, portal.MXID)), nil
 		},
 	})
 }
@@ -436,7 +437,27 @@ func (m *MattermostClient) handleChannelViewed(evt *model.WebSocketEvent) {
 }
 
 // convertPostToMatrix converts a Mattermost post to a bridgev2.ConvertedMessage.
+// It does not transfer attachment contents; use convertPostToMatrixMedia for that.
 func (m *MattermostClient) convertPostToMatrix(post *model.Post) *bridgev2.ConvertedMessage {
+	return m.convertPostToMatrixMedia(context.Background(), post, nil)
+}
+
+// matrixMediaUploader uploads attachment bytes to the Matrix media repo.
+type matrixMediaUploader func(ctx context.Context, data []byte, fileName, mimeType string) (id.ContentURIString, *event.EncryptedFileInfo, error)
+
+// matrixUploader builds an uploader that stores media through intent for roomID.
+func matrixUploader(intent bridgev2.MatrixAPI, roomID id.RoomID) matrixMediaUploader {
+	if intent == nil {
+		return nil
+	}
+	return func(ctx context.Context, data []byte, fileName, mimeType string) (id.ContentURIString, *event.EncryptedFileInfo, error) {
+		return intent.UploadMedia(ctx, roomID, data, fileName, mimeType)
+	}
+}
+
+// convertPostToMatrixMedia converts a post and, when upload is non-nil,
+// transfers its attachments to Matrix.
+func (m *MattermostClient) convertPostToMatrixMedia(ctx context.Context, post *model.Post, upload matrixMediaUploader) *bridgev2.ConvertedMessage {
 	var parts []*bridgev2.ConvertedMessagePart
 
 	if post.Message != "" {
@@ -455,7 +476,7 @@ func (m *MattermostClient) convertPostToMatrix(post *model.Post) *bridgev2.Conve
 	}
 
 	for i, fileID := range post.FileIds {
-		filePart := m.convertFileToMatrix(fileID, i+1)
+		filePart := m.convertFileToMatrixMedia(ctx, fileID, i+1, upload)
 		if filePart != nil {
 			parts = append(parts, filePart)
 		}
@@ -499,9 +520,18 @@ func (m *MattermostClient) convertEditToMatrix(post *model.Post, existing []*dat
 	}
 }
 
-// convertFileToMatrix converts a Mattermost file attachment to a Matrix message part.
+// convertFileToMatrix converts a Mattermost file attachment to a Matrix message
+// part without transferring its contents (metadata only).
 func (m *MattermostClient) convertFileToMatrix(fileID string, partIndex int) *bridgev2.ConvertedMessagePart {
-	ctx := context.Background()
+	return m.convertFileToMatrixMedia(context.Background(), fileID, partIndex, nil)
+}
+
+// convertFileToMatrixMedia converts a Mattermost file attachment to a Matrix
+// message part. With a non-nil upload func the file is downloaded from
+// Mattermost and uploaded to Matrix so the event carries a real media URL;
+// if the transfer fails a text notice part is returned instead of a broken
+// media event.
+func (m *MattermostClient) convertFileToMatrixMedia(ctx context.Context, fileID string, partIndex int, upload matrixMediaUploader) *bridgev2.ConvertedMessagePart {
 	fileInfo, _, err := m.client.GetFileInfo(ctx, fileID)
 	if err != nil {
 		m.log.Error().Err(err).Str("file_id", fileID).Msg("Failed to get file info")
@@ -519,21 +549,75 @@ func (m *MattermostClient) convertFileToMatrix(fileID string, partIndex int) *br
 		msgType = event.MsgAudio
 	}
 
-	return &bridgev2.ConvertedMessagePart{
-		ID:   MakeMessagePartID(partIndex),
-		Type: event.EventMessage,
-		Content: &event.MessageEventContent{
-			MsgType: msgType,
-			Body:    fileInfo.Name,
-			Info: &event.FileInfo{
-				MimeType: mimeType,
-				Size:     int(fileInfo.Size),
-			},
+	content := &event.MessageEventContent{
+		MsgType: msgType,
+		Body:    fileInfo.Name,
+		Info: &event.FileInfo{
+			MimeType: mimeType,
+			Size:     int(fileInfo.Size),
 		},
+	}
+	if msgType == event.MsgImage {
+		content.Info.Width = fileInfo.Width
+		content.Info.Height = fileInfo.Height
+	}
+	if msgType == event.MsgAudio && isVoiceMessage(fileInfo.Name, mimeType) {
+		// Render as a voice message (playable bubble) in Matrix clients.
+		content.MSC3245Voice = &event.MSC3245Voice{}
+	}
+
+	if upload != nil {
+		data, _, err := m.client.GetFile(ctx, fileID)
+		if err != nil {
+			m.log.Error().Err(err).Str("file_id", fileID).Msg("Failed to download file from Mattermost")
+			return fileFailurePart(partIndex, fileInfo.Name)
+		}
+		url, encFile, err := upload(ctx, data, fileInfo.Name, mimeType)
+		if err != nil {
+			m.log.Error().Err(err).Str("file_id", fileID).Msg("Failed to upload file to Matrix")
+			return fileFailurePart(partIndex, fileInfo.Name)
+		}
+		content.Info.Size = len(data)
+		if encFile != nil {
+			content.File = encFile
+		} else {
+			content.URL = url
+		}
+	}
+
+	return &bridgev2.ConvertedMessagePart{
+		ID:      MakeMessagePartID(partIndex),
+		Type:    event.EventMessage,
+		Content: content,
 		Extra: map[string]any{
 			"fi.mau.mattermost.file_id": fileID,
 		},
 	}
+}
+
+func fileFailurePart(partIndex int, name string) *bridgev2.ConvertedMessagePart {
+	return &bridgev2.ConvertedMessagePart{
+		ID:   MakeMessagePartID(partIndex),
+		Type: event.EventMessage,
+		Content: &event.MessageEventContent{
+			MsgType: event.MsgNotice,
+			Body:    fmt.Sprintf("[Attachment %q could not be bridged from Mattermost]", name),
+		},
+	}
+}
+
+// isVoiceMessage guesses whether a Mattermost audio attachment is a recorded
+// voice message rather than a music/audio file.
+func isVoiceMessage(name, mimeType string) bool {
+	lower := strings.ToLower(name)
+	if strings.Contains(lower, "voice") || strings.Contains(lower, "recording") {
+		return true
+	}
+	switch strings.ToLower(strings.SplitN(mimeType, ";", 2)[0]) {
+	case "audio/ogg", "audio/opus", "audio/webm":
+		return true
+	}
+	return false
 }
 
 // isBridgeUsername returns true if the username belongs to a known bridge

@@ -42,7 +42,7 @@ func (m *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		post.Message = text
 
 	case event.MsgImage, event.MsgVideo, event.MsgAudio, event.MsgFile:
-		fileID, err := m.uploadMatrixMedia(ctx, msg)
+		fileID, err := m.uploadMatrixMedia(ctx, postClient, msg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to upload media: %w", err)
 		}
@@ -238,7 +238,7 @@ func (m *MattermostClient) HandleMatrixTyping(ctx context.Context, msg *bridgev2
 }
 
 // uploadMatrixMedia downloads media from Matrix and uploads it to Mattermost.
-func (m *MattermostClient) uploadMatrixMedia(ctx context.Context, msg *bridgev2.MatrixMessage) (string, error) {
+func (m *MattermostClient) uploadMatrixMedia(ctx context.Context, client *model.Client4, msg *bridgev2.MatrixMessage) (string, error) {
 	content := msg.Content
 
 	data, err := msg.Portal.Bridge.Bot.DownloadMedia(ctx, content.URL, content.File)
@@ -247,12 +247,12 @@ func (m *MattermostClient) uploadMatrixMedia(ctx context.Context, msg *bridgev2.
 	}
 
 	channelID := ParsePortalID(msg.Portal.ID)
-	filename := content.GetFileName()
-	if filename == "" {
-		filename = "upload"
-	}
+	filename := fileNameWithExt(content.GetFileName(), content)
 
-	fileUploadResp, _, err := m.client.UploadFile(ctx, data, channelID, filename)
+	// Upload with the same client that will create the post: Mattermost only
+	// lets a post attach files created by its own author, so a file uploaded
+	// by the relay account is silently dropped from a puppet's post.
+	fileUploadResp, _, err := client.UploadFile(ctx, data, channelID, filename)
 	if err != nil {
 		return "", fmt.Errorf("failed to upload to Mattermost: %w", err)
 	}
@@ -350,4 +350,29 @@ func resolveThreadRoot(ctx context.Context, client *model.Client4, targetID stri
 		return targetID
 	}
 	return target.RootId
+}
+
+// fileNameWithExt returns name, adding an extension derived from the MIME type
+// when it has none (e.g. Element voice messages are named "Voice message"),
+// since Mattermost decides how to preview a file from its extension.
+func fileNameWithExt(name string, content *event.MessageEventContent) string {
+	if name == "" {
+		name = "upload"
+	}
+	if strings.Contains(name, ".") || content.Info == nil {
+		return name
+	}
+	exts := map[string]string{
+		"audio/ogg": ".ogg", "audio/opus": ".opus", "audio/mpeg": ".mp3",
+		"audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/aac": ".aac",
+		"audio/wav": ".wav", "audio/x-wav": ".wav", "audio/webm": ".webm",
+		"audio/flac": ".flac", "video/mp4": ".mp4", "video/webm": ".webm",
+		"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+		"image/webp": ".webp", "application/pdf": ".pdf",
+	}
+	mt := strings.ToLower(strings.SplitN(content.Info.MimeType, ";", 2)[0])
+	if ext, ok := exts[mt]; ok {
+		return name + ext
+	}
+	return name
 }
