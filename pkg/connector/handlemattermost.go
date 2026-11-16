@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -80,8 +82,14 @@ func (m *MattermostClient) parsePostedEvent(evt *model.WebSocketEvent) (*model.P
 		return nil, nil
 	}
 
-	// Echo prevention: skip non-default post types (system messages).
-	if post.Type != "" && post.Type != model.PostTypeDefault {
+	// Echo prevention: skip non-default post types (system messages), except
+	// custom-typed posts that carry files (e.g. a voice-message plugin's own
+	// post type): those are real content and are transferred as-is.
+	if !shouldBridgePostType(&post) {
+		m.log.Debug().
+			Str("post_id", post.Id).
+			Str("post_type", post.Type).
+			Msg("Skipping non-default post type")
 		return nil, nil
 	}
 
@@ -106,6 +114,20 @@ func (m *MattermostClient) parsePostedEvent(evt *model.WebSocketEvent) (*model.P
 	}
 
 	return &post, nil
+}
+
+// shouldBridgePostType reports whether a post of this type is user content.
+// Default posts always are. Mattermost's own system messages ("system_*") never
+// are. Any other, custom post type is bridged only when it carries files, so
+// attachments created by plugins are not lost.
+func shouldBridgePostType(post *model.Post) bool {
+	if post.Type == "" || post.Type == model.PostTypeDefault {
+		return true
+	}
+	if strings.HasPrefix(post.Type, "system_") {
+		return false
+	}
+	return len(post.FileIds) > 0
 }
 
 // parsePostEditedEvent extracts and validates an edited post from a WebSocket event,
@@ -535,11 +557,20 @@ func (m *MattermostClient) convertFileToMatrixMedia(ctx context.Context, fileID 
 	fileInfo, _, err := m.client.GetFileInfo(ctx, fileID)
 	if err != nil {
 		m.log.Error().Err(err).Str("file_id", fileID).Msg("Failed to get file info")
+		if upload != nil {
+			return fileFailurePart(partIndex, fileID)
+		}
 		return nil
 	}
 
 	msgType := event.MsgFile
 	mimeType := fileInfo.MimeType
+	if mimeType == "" || mimeType == "application/octet-stream" {
+		// Unknown type: guess from the extension, else transfer as a plain file.
+		if guessed := mime.TypeByExtension(strings.ToLower(filepath.Ext(fileInfo.Name))); guessed != "" {
+			mimeType = guessed
+		}
+	}
 	switch {
 	case strings.HasPrefix(mimeType, "image/"):
 		msgType = event.MsgImage

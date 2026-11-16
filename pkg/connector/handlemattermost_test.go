@@ -2139,6 +2139,62 @@ func TestConvertFileToMatrixMedia_VoiceMessage(t *testing.T) {
 	}
 }
 
+func TestShouldBridgePostType(t *testing.T) {
+	t.Parallel()
+	files := model.StringArray{"f1"}
+	tests := []struct {
+		name string
+		post *model.Post
+		want bool
+	}{
+		{"default", &model.Post{Type: model.PostTypeDefault}, true},
+		{"empty type", &model.Post{}, true},
+		{"system message", &model.Post{Type: "system_join_channel"}, false},
+		{"system message with files", &model.Post{Type: "system_add_to_channel", FileIds: files}, false},
+		{"custom type with files", &model.Post{Type: "custom_voice", FileIds: files}, true},
+		{"custom type without files", &model.Post{Type: "custom_voice"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shouldBridgePostType(tt.post); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConvertFileToMatrixMedia_UnknownTypeIsPlainFile(t *testing.T) {
+	t.Parallel()
+	fake := newFakeMM()
+	t.Cleanup(fake.Close)
+	fake.Files["x1"] = &model.FileInfo{Id: "x1", Name: "blob.zzzunknown", MimeType: "", Size: 4}
+
+	mc := newFullTestClient(fake.Server.URL)
+	up := func(_ context.Context, _ []byte, _, _ string) (id.ContentURIString, *event.EncryptedFileInfo, error) {
+		return "mxc://example.com/x", nil, nil
+	}
+	res := mc.convertFileToMatrixMedia(context.Background(), "x1", 1, up)
+	if res == nil || res.Content.MsgType != event.MsgFile || res.Content.URL == "" {
+		t.Fatalf("expected plain file with URL, got %+v", res)
+	}
+}
+
+func TestConvertFileToMatrixMedia_FileInfoErrorGivesNotice(t *testing.T) {
+	t.Parallel()
+	fake := newFakeMM()
+	t.Cleanup(fake.Close)
+
+	mc := newFullTestClient(fake.Server.URL)
+	up := func(context.Context, []byte, string, string) (id.ContentURIString, *event.EncryptedFileInfo, error) {
+		return "mxc://example.com/x", nil, nil
+	}
+	res := mc.convertFileToMatrixMedia(context.Background(), "missing", 1, up)
+	if res == nil || res.Content.MsgType != event.MsgNotice {
+		t.Fatalf("expected notice part, got %+v", res)
+	}
+}
+
 func TestFileNameWithExt(t *testing.T) {
 	t.Parallel()
 	c := &event.MessageEventContent{Info: &event.FileInfo{MimeType: "audio/ogg; codecs=opus"}}

@@ -73,7 +73,7 @@ func (m *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 	var messages []*bridgev2.BackfillMessage
 	for _, post := range posts {
 		// Skip system messages.
-		if post.Type != "" && post.Type != model.PostTypeDefault {
+		if !shouldBridgePostType(post) {
 			continue
 		}
 
