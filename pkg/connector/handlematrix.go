@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"maunium.net/go/mautrix/bridgev2"
@@ -47,7 +48,13 @@ func (m *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 			return nil, fmt.Errorf("failed to upload media: %w", err)
 		}
 		post.FileIds = []string{fileID}
-		if content.Body != "" && content.Body != content.GetFileName() {
+		if voiceType := m.connector.Config.VoicePostType; voiceType != "" && content.MSC3245Voice != nil {
+			// Post as the Mattermost voice plugin's own message type.
+			props, secs := buildMMVoiceProps(content)
+			post.Type = voiceType
+			post.Message = voiceLabel(secs)
+			post.AddProp("voice", props)
+		} else if content.Body != "" && content.Body != content.GetFileName() {
 			post.Message = content.Body
 		}
 
@@ -248,6 +255,9 @@ func (m *MattermostClient) uploadMatrixMedia(ctx context.Context, client *model.
 
 	channelID := ParsePortalID(msg.Portal.ID)
 	filename := fileNameWithExt(content.GetFileName(), content)
+	if m.connector.Config.VoicePostType != "" && content.MSC3245Voice != nil {
+		filename = voiceFileName(content.GetFileName(), content, time.Now())
+	}
 
 	// Upload with the same client that will create the post: Mattermost only
 	// lets a post attach files created by its own author, so a file uploaded

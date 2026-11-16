@@ -482,7 +482,12 @@ func matrixUploader(intent bridgev2.MatrixAPI, roomID id.RoomID) matrixMediaUplo
 func (m *MattermostClient) convertPostToMatrixMedia(ctx context.Context, post *model.Post, upload matrixMediaUploader) *bridgev2.ConvertedMessage {
 	var parts []*bridgev2.ConvertedMessagePart
 
-	if post.Message != "" {
+	// A voice-plugin post: the "🎤 Voice message (m:ss)" text is redundant next
+	// to the Matrix voice event, so drop it.
+	voice := parseMMVoice(post)
+	skipText := voice != nil && len(post.FileIds) > 0 && isVoicePlaceholderText(post.Message)
+
+	if post.Message != "" && !skipText {
 		parsed := mattermostfmtParse(post.Message)
 
 		parts = append(parts, &bridgev2.ConvertedMessagePart{
@@ -500,6 +505,10 @@ func (m *MattermostClient) convertPostToMatrixMedia(ctx context.Context, post *m
 	for i, fileID := range post.FileIds {
 		filePart := m.convertFileToMatrixMedia(ctx, fileID, i+1, upload)
 		if filePart != nil {
+			if voice != nil && filePart.Content.MsgType == event.MsgAudio {
+				applyMMVoice(filePart.Content, voice)
+				voice = nil // only the first audio file is the voice message
+			}
 			parts = append(parts, filePart)
 		}
 	}

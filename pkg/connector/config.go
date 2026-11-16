@@ -29,6 +29,12 @@ type Config struct {
 	// the /api/reload-puppets endpoint. Defaults to ":29320".
 	AdminAPIAddr string `yaml:"admin_api_addr"`
 
+	// VoicePostType is the custom Mattermost post type used by a voice-message
+	// plugin (e.g. "custom_voice"). When set, Matrix voice messages are posted
+	// as that type with props.voice so Mattermost renders its own voice player.
+	// Leave empty to post them as plain audio attachments.
+	VoicePostType string `yaml:"voice_post_type"`
+
 	BackfillEnabled  bool `yaml:"backfill_enabled"`
 	BackfillMaxCount int  `yaml:"backfill_max_count"`
 	TypingTimeout    int  `yaml:"typing_timeout"`
@@ -60,6 +66,7 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "displayname_template")
 	helper.Copy(up.Str, "bot_prefix")
 	helper.Copy(up.Str, "admin_api_addr")
+	helper.Copy(up.Str, "voice_post_type")
 	helper.Copy(up.Bool, "backfill_enabled")
 	helper.Copy(up.Int, "backfill_max_count")
 	helper.Copy(up.Int, "typing_timeout")

@@ -19,6 +19,10 @@ admin_api_addr: ":29320"
 backfill_enabled: false
 
 # Maximum number of messages to backfill per channel.
+# Custom post type of a Mattermost voice-message plugin (e.g. "custom_voice").
+# Empty = Matrix voice messages are posted as plain audio attachments.
+voice_post_type: ""
+
 backfill_max_count: 100
 
 # Typing indicator timeout in seconds.
