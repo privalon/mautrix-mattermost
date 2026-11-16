@@ -478,6 +478,15 @@ func (m *MattermostClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal
 				},
 				MaxSize: 100 * 1024 * 1024,
 			},
+			// Matrix voice messages (MSC3245) are checked by bridgev2 under their
+			// own capability key, not MsgAudio; without it they are rejected as
+			// "unsupported message type" before reaching HandleMatrixMessage.
+			event.CapMsgVoice: {
+				MimeTypes: map[string]event.CapabilitySupportLevel{
+					"audio/*": event.CapLevelFullySupported,
+				},
+				MaxSize: 100 * 1024 * 1024,
+			},
 			event.MsgFile: {
 				MimeTypes: map[string]event.CapabilitySupportLevel{
 					"*/*": event.CapLevelFullySupported,

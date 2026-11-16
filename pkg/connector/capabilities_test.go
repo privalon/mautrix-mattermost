@@ -67,6 +67,31 @@ func TestGetCapabilities_Files(t *testing.T) {
 	}
 }
 
+// bridgev2 rejects Matrix voice messages (MSC3245) as "unsupported message
+// type" unless the room features list them under CapMsgVoice.
+func TestGetCapabilities_VoiceMessages(t *testing.T) {
+	t.Parallel()
+	client := &MattermostClient{}
+	caps := client.GetCapabilities(context.Background(), nil)
+
+	voice := &event.MessageEventContent{
+		MsgType:      event.MsgAudio,
+		MSC3245Voice: &event.MSC3245Voice{},
+	}
+	if got := voice.GetCapMsgType(); got != event.CapMsgVoice {
+		t.Fatalf("voice content cap type: got %q, want %q", got, event.CapMsgVoice)
+	}
+	fc, ok := caps.File[voice.GetCapMsgType()]
+	if !ok {
+		t.Fatal("File support missing for voice messages")
+	}
+	for _, mt := range []string{"audio/ogg", "audio/ogg; codecs=opus", "audio/mp4"} {
+		if fc.GetMimeSupport(mt).Reject() {
+			t.Errorf("voice mime %q rejected", mt)
+		}
+	}
+}
+
 func TestGetCapabilities_ImageCaption(t *testing.T) {
 	t.Parallel()
 	client := &MattermostClient{}
