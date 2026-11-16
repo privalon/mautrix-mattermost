@@ -488,17 +488,10 @@ func (m *MattermostClient) convertPostToMatrixMedia(ctx context.Context, post *m
 	skipText := voice != nil && len(post.FileIds) > 0 && isVoicePlaceholderText(post.Message)
 
 	if post.Message != "" && !skipText {
-		parsed := mattermostfmtParse(post.Message)
-
 		parts = append(parts, &bridgev2.ConvertedMessagePart{
-			ID:   MakeMessagePartID(0),
-			Type: event.EventMessage,
-			Content: &event.MessageEventContent{
-				MsgType:       event.MsgText,
-				Body:          parsed.Body,
-				Format:        parsed.Format,
-				FormattedBody: parsed.FormattedBody,
-			},
+			ID:      MakeMessagePartID(0),
+			Type:    event.EventMessage,
+			Content: m.textContentWithMentions(ctx, post.Message),
 		})
 	}
 
@@ -527,8 +520,6 @@ func (m *MattermostClient) convertPostToMatrixMedia(ctx context.Context, post *m
 
 // convertEditToMatrix converts an edited Mattermost post to a bridgev2.ConvertedEdit.
 func (m *MattermostClient) convertEditToMatrix(post *model.Post, existing []*database.Message) *bridgev2.ConvertedEdit {
-	parsed := mattermostfmtParse(post.Message)
-
 	var editParts []*bridgev2.ConvertedEditPart
 	var targetPart *database.Message
 	if len(existing) > 0 {
@@ -536,14 +527,9 @@ func (m *MattermostClient) convertEditToMatrix(post *model.Post, existing []*dat
 	}
 
 	editParts = append(editParts, &bridgev2.ConvertedEditPart{
-		Part: targetPart,
-		Type: event.EventMessage,
-		Content: &event.MessageEventContent{
-			MsgType:       event.MsgText,
-			Body:          parsed.Body,
-			Format:        parsed.Format,
-			FormattedBody: parsed.FormattedBody,
-		},
+		Part:    targetPart,
+		Type:    event.EventMessage,
+		Content: m.textContentWithMentions(context.Background(), post.Message),
 	})
 
 	return &bridgev2.ConvertedEdit{

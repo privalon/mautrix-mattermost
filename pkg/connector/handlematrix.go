@@ -36,7 +36,7 @@ func (m *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 
 	switch content.MsgType {
 	case event.MsgText, event.MsgNotice, event.MsgEmote:
-		text := matrixfmtParse(content)
+		text := matrixfmtParse(m.matrixContentForMattermost(ctx, content))
 		if content.MsgType == event.MsgEmote {
 			text = "/me " + text
 		}
@@ -128,7 +128,7 @@ func (m *MattermostClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.M
 	}
 
 	postID := ParseMessageID(msg.EditTarget.ID)
-	text := matrixfmtParse(msg.Content)
+	text := matrixfmtParse(m.matrixContentForMattermost(ctx, msg.Content))
 
 	patch := &model.PostPatch{
 		Message: &text,

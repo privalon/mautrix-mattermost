@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/rs/zerolog"
@@ -78,6 +79,9 @@ type fakeMM struct {
 	ChannelsForTeamUser map[string][]*model.Channel
 	// ChannelsForUser maps user ID to channel list (all channels including DMs).
 	ChannelsForUser map[string][]*model.Channel
+	// UsernameLookups counts GET /users/username/{name} calls.
+	UsernameLookups atomic.Int64
+
 	// Files maps file ID to model.FileInfo.
 	Files map[string]*model.FileInfo
 	// Posts maps channel ID to PostList for backfill endpoints.
@@ -184,6 +188,19 @@ func (f *fakeMM) handler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		_ = json.NewEncoder(w).Encode([]*model.Channel{})
+
+	// GET /api/v4/users/username/{username}
+	case r.Method == "GET" && strings.HasPrefix(path, "/api/v4/users/username/"):
+		name := strings.TrimPrefix(path, "/api/v4/users/username/")
+		f.UsernameLookups.Add(1)
+		for _, u := range f.Users {
+			if u.Username == name {
+				_ = json.NewEncoder(w).Encode(u)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "user not found"})
 
 	// GET /api/v4/users/{user_id}
 	case r.Method == "GET" && strings.HasPrefix(path, "/api/v4/users/") && !strings.Contains(path[len("/api/v4/users/"):], "/"):

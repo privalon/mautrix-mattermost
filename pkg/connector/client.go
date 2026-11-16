@@ -59,6 +59,9 @@ type MattermostClient struct {
 	// user's own posts from other Mattermost clients are still bridged.
 	sentPending sync.Map // pending post id (string) -> time.Time
 
+	// mentions caches user lookups used to translate @mentions both ways.
+	mentions mentionCache
+
 	// wsReconnecting guards against two reconnect loops running at once.
 	wsReconnecting atomic.Bool
 	// wsConnect and wsBackoffBase exist so tests can drive the reconnect loop.
