@@ -32,7 +32,10 @@ var (
 	linkRe       = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
 	headingRe    = regexp.MustCompile(`(?m)^(#{1,6})\s+(.+)$`)
 	ulRe         = regexp.MustCompile(`(?m)^[-*]\s+(.+)$`)
-	olRe         = regexp.MustCompile(`(?m)^\d+\.\s+(.+)$`)
+	olRe         = regexp.MustCompile(`(?m)^(\d+)\.\s+(.+)$`)
+	contRe       = regexp.MustCompile(`^(?:\s{2,}|\t)\S`)
+	blockGapRe   = regexp.MustCompile(`\n*(<(?:ul|ol|blockquote|h[1-6])[ >])`)
+	blockEndRe   = regexp.MustCompile(`(</(?:ul|ol|blockquote|h[1-6])>)\n*`)
 	blockquoteRe = regexp.MustCompile(`(?m)^>\s+(.+)$`)
 )
 
@@ -85,18 +88,39 @@ func Parse(text string) *ParsedMessage {
 	var result []string
 	var listType string // "ul", "ol", or ""
 	var listItems []string
+	olStart := ""
 
 	flushList := func() {
 		if len(listItems) == 0 {
 			return
 		}
-		tag := listType
-		result = append(result, "<"+tag+">"+strings.Join(listItems, "")+"</"+tag+">")
+		open := "<" + listType + ">"
+		if listType == "ol" && olStart != "" && olStart != "1" {
+			open = `<ol start="` + olStart + `">`
+		}
+		result = append(result, open+strings.Join(listItems, "")+"</"+listType+">")
 		listItems = nil
 		listType = ""
+		olStart = ""
 	}
 
-	for _, line := range lines {
+	for i, line := range lines {
+		// Indented continuation line inside a list item (or a blank line
+		// between items of the same list) stays within the list.
+		if len(listItems) > 0 {
+			if contRe.MatchString(line) && !ulRe.MatchString(line) && !olRe.MatchString(line) {
+				last := len(listItems) - 1
+				listItems[last] = strings.TrimSuffix(listItems[last], "</li>") + "<br/>" + html.EscapeString(strings.TrimSpace(line)) + "</li>"
+				continue
+			}
+			if strings.TrimSpace(line) == "" && i+1 < len(lines) {
+				next := lines[i+1]
+				if (listType == "ul" && ulRe.MatchString(next)) || (listType == "ol" && olRe.MatchString(next)) {
+					continue
+				}
+			}
+		}
+
 		// Check blockquote.
 		if m := blockquoteRe.FindStringSubmatch(line); len(m) >= 2 {
 			flushList()
@@ -128,8 +152,9 @@ func Parse(text string) *ParsedMessage {
 			if listType != "ol" {
 				flushList()
 				listType = "ol"
+				olStart = m[1]
 			}
-			listItems = append(listItems, "<li>"+html.EscapeString(m[1])+"</li>")
+			listItems = append(listItems, "<li>"+html.EscapeString(m[2])+"</li>")
 			continue
 		}
 
@@ -140,6 +165,11 @@ func Parse(text string) *ParsedMessage {
 	flushList()
 
 	formatted := strings.Join(result, "\n")
+
+	// Block elements carry their own spacing; drop adjacent newlines so they
+	// don't turn into stray <br/> tags.
+	formatted = blockGapRe.ReplaceAllString(formatted, "$1")
+	formatted = blockEndRe.ReplaceAllString(formatted, "$1")
 
 	// Step 3: Inline formatting.
 	formatted = codeRe.ReplaceAllString(formatted, "<code>$1</code>")
