@@ -355,3 +355,46 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+func TestParseUnderscoresInsideIdentifiersAreNotItalic(t *testing.T) {
+	t.Parallel()
+	// Regression: the italic regex swallowed the characters around the
+	// underscores, turning skipr_vpn_desktop into skip<em>vpn</em>esktop.
+	in := "Hi\nhttps://github.com/skipr-network/skipr_vpn_desktop/pull/616\nthanks"
+	result := Parse(in)
+	if result.Body != in {
+		t.Fatalf("Body changed: %q", result.Body)
+	}
+	if strings.Contains(result.FormattedBody, "<em>") {
+		t.Errorf("identifier underscores must not italicize: %q", result.FormattedBody)
+	}
+	if result.Format == event.FormatHTML && !strings.Contains(result.FormattedBody, "skipr_vpn_desktop") {
+		t.Errorf("URL text corrupted: %q", result.FormattedBody)
+	}
+}
+
+func TestParseItalicKeepsSurroundingCharacters(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"a _b_ c":             "a <em>b</em> c",
+		"_start_ and _end_":   "<em>start</em> and <em>end</em>",
+		"(_paren_)":           "(<em>paren</em>)",
+		"snake_case_name":     "snake_case_name",
+		"see https://x/_a_/b": "see https://x/_a_/b",
+		"keep a_b and _it_":   "keep a_b and <em>it</em>",
+	}
+	for in, want := range cases {
+		if got := italicize(in); got != want {
+			t.Errorf("italicize(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseItalicWithBoldNeighbour(t *testing.T) {
+	t.Parallel()
+	result := Parse("**bold** and _it_")
+	want := "<strong>bold</strong> and <em>it</em>"
+	if result.FormattedBody != want {
+		t.Errorf("got %q, want %q", result.FormattedBody, want)
+	}
+}
